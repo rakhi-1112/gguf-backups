@@ -4,8 +4,7 @@ import json
 import re
 from openpyxl import load_workbook
 
-# Initialize the model
-model = GPT4All(model_name='Phi-3-mini-4k-instruct.Q4_0.gguf')
+model = GPT4All(model_name='Phi-3-mini-4k-instruct.Q4_0.gguf', model_path='./')
 
 def read_excel(file_path):
     return pd.read_excel(file_path)
