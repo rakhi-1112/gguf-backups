@@ -4,7 +4,7 @@ import json
 import re
 from openpyxl import load_workbook
 
-model = GPT4All(model_name='Phi-3-mini-4k-instruct.Q4_0.gguf', model_path='./')
+model = GPT4All(model_name='Meta-Llama-3-8B-Instruct.Q4_0.gguf', model_path='./', allow_download=False, n_ctx=8192)
 
 def read_excel(file_path):
     return pd.read_excel(file_path)
@@ -18,7 +18,7 @@ def prepare_prompt(df, num_samples=5, num_rows_to_generate=10):
                 You are a data generator. I will provide you with the column names of a dataset and a few sample rows. 
                 Your task is to generate {num_rows_to_generate} new rows of synthetic data that follow the same structure and pattern.
 
-                Please be creative with the generated data.
+                Please be creative with the generated data. Make sure that they are unique from each other.
 
                 Column Names: {columns}
 
@@ -39,14 +39,16 @@ def extract_json(response):
         print(f"Error extracting JSON: {e}")
         return None
 
-def generate_synthetic_data(df, num_rows=10):
+def generate_synthetic_data(df, num_samples=2, num_rows=10):
     if num_rows < 2:
         num_rows = 2
 
-    prompt = prepare_prompt(df, num_rows_to_generate=num_rows)
+    prompt = prepare_prompt(df, num_samples=num_samples, num_rows_to_generate=num_rows)
     
     with model.chat_session():
         response = model.generate(prompt, max_tokens = num_rows * 1024)
+
+        print(response)
 
         try:
             synthetic_data = extract_json(response)
@@ -74,7 +76,9 @@ def main():
     file_path = "Dataset.xlsx"
     df = read_excel(file_path)
 
-    synthetic_df = generate_synthetic_data(df, num_rows=3)
+    ## Iss line pe num_samples is ki kitne datapoints uthayenge original dataset se
+    ## And num_rows is kitne synthetic datapoints generate krenge
+    synthetic_df = generate_synthetic_data(df, num_samples=8, num_rows=8)
 
     if synthetic_df is not None:
         print("Synthetic DataFrame:")
