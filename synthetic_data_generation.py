@@ -4,6 +4,130 @@ from gpt4all import GPT4All
 import json
 import re
 from openpyxl import load_workbook
+import math
+
+class DataPreprocessor:
+    def __init__(self):
+        self.tokens = 0
+        self.__original_df = None
+        self.__columns = []
+        self.__base_prompt = '''
+I will provide you with the headers and 1 row of a dataset. I will give them to you as two lists. 
+For example: Columns = ["Column1", "Column2", "Column3"], and Row = ["Value1", "Value2", "Value3"]
+
+From here, I want some specific column types to be discarded:
+    1. Columns which are IDs, for example ISIN, CUSIP, etc
+    2. Columns which have Yes/No or Y/N values
+
+I want to mostly keep columns which have dates, times and free text (names, descriptions, etc)
+
+
+So, please mention the column names which should be retained. Also, make sure that the retained column names are displayed as a json list. For example: ["Column1", "Column2", "Column3"]
+        '''
+        self.__model = GPT4All(model_name='Meta-Llama-3-8B-Instruct.Q4_0.gguf', model_path='./', allow_download=False, n_ctx=8192)
+
+    # Performs a very rough calculation of the number of tokens in header and first row of given df
+    def __calculate_tokens(self, df):
+        header_text = "".join(df.columns)
+        tokens_in_header = len(header_text) // 4
+        
+        if not df.empty:
+            first_row_text = "".join(map(str, df.iloc[0]))
+            tokens_in_first_row = len(first_row_text) // 4
+        else:
+            tokens_in_first_row = 0
+        
+        return tokens_in_header, tokens_in_first_row
+
+    def __parse_json(self, response):
+        try:
+            start = response.find("```") + len("```")
+            end = response.rfind("```")
+            if start == -1 or end == -1:
+                return None
+            
+            response_section = response[start:end].strip()
+            json_start = response_section.find("[")
+            json_end = response_section.rfind("]") + 1
+            
+            if json_start == -1 or json_end == -1:
+                return None
+            
+            json_content = response_section[json_start:json_end]
+            parsed_json = json.loads(json_content)
+            
+            if isinstance(parsed_json, list) and all(isinstance(row, str) for row in parsed_json):
+                return parsed_json
+            else:
+                return None
+        except (json.JSONDecodeError, AttributeError):
+            return None
+
+    def __keep_relevant_rows(self, df):
+        column_names = json.dumps(df.columns.tolist(), indent=4)
+        row = json.dumps(df.values.tolist()[0], indent=4)
+
+        prompt = self.__base_prompt + f'\nColumn Names: {column_names}\nRow {row}\n'
+        
+        data = None
+        with self.__model.chat_session():
+            iterations = 0
+            while data is None:
+                if iterations > 6:
+                    raise SystemExit("Stuck in loop. Please run again.")
+                response = self.__model.generate(prompt, max_tokens = 1024)
+                data = self.__parse_json(response)
+                iterations += 1
+        
+        for col in data:
+            self.__columns.append(col)
+
+
+    def __split_dataframe(self, df, n_buckets):
+        if n_buckets <= 0:
+            raise ValueError("Number of buckets must be greater than 0")
+        
+        num_cols = len(df.columns)
+        split_size = num_cols // n_buckets
+        remainder = num_cols % n_buckets
+        
+        split_indices = []
+        start_idx = 0
+        for i in range(n_buckets):
+            extra = 1 if i < remainder else 0
+            end_idx = start_idx + split_size + extra
+            split_indices.append((start_idx, end_idx))
+            start_idx = end_idx
+        
+        # Sometimes the last dataframe is empty except for an index. This removes that last df.
+        split_dfs = [df.iloc[:, start:end] for start, end in split_indices]
+        if len(split_dfs[-1].columns.tolist()) == 0:
+            split_dfs = split_dfs[:-1]
+
+        return split_dfs
+
+    def preprocess_data(self, df):
+        self.__original_df = df
+
+        df = df.sample(1)
+
+        header_tokens, row_tokens = self.__calculate_tokens(df)
+        tokens = header_tokens + row_tokens
+
+        # I have a token limit of 8192. This will also include my base prompt.
+        # After subtracting the base prompt, I'm assuming (conservatively) we will have 7000 tokens left.
+        # If the total tokens in header + 1 row in df exceeds 7000, I will query the LLM multiple times.
+        # For example, if total tokens = 15000, I will query the LLM three times. 7000 + 7000 + 1000
+        n_buckets = math.ceil(tokens / 7000)
+
+        split_dataframes = self.__split_dataframe(df, n_buckets)
+
+        for split_df in split_dataframes:
+            self.__keep_relevant_rows(split_df)
+
+        condensed_df = self.__original_df[self.__columns]
+        return condensed_df
+
 
 class SyntheticDataGenerator:
     def __init__(self, input_df, n_synthetic_rows = 2, custom_prompt = '', bucket_size = 5):
@@ -66,9 +190,13 @@ Make sure that your output is generated as a json, in the same format as the inp
 
         data = None
         with self.__model.chat_session():
+            iterations = 0
             while data is None:
+                if iterations > 6:
+                    raise SystemExit("Stuck in loop. Please run again.")
                 response = self.__model.generate(prompt, max_tokens = n_rows * 1024)
                 data = self.parse_json(response)
+                iterations += 1
 
         return data
 
@@ -94,7 +222,10 @@ def save_dataframe_to_excel(df):
 def main():
     input_df = pd.read_excel("Dataset.xlsx", sheet_name="Sheet1")
 
-    synthetic_data_generator = SyntheticDataGenerator(input_df=input_df, n_synthetic_rows=10, bucket_size = 5)
+    processor = DataPreprocessor()
+    condensed_df = processor.preprocess_data(input_df)
+
+    synthetic_data_generator = SyntheticDataGenerator(input_df=condensed_df, n_synthetic_rows=10, bucket_size = 5)
     synthetic_data_generator.generate_synthetic_data()
 
     synthetic_df = synthetic_data_generator.generated_df
