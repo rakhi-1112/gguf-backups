@@ -36,7 +36,7 @@ for line in lines:
 
 trimmed_data_lines = []
 for data_line in data_lines:
-    trimmed_data_lines.append(data_line[:len(fields)])
+    trimmed_data_lines.append(data_line[3:len(fields)])
 
 df = pd.DataFrame(trimmed_data_lines, columns=fields)
 df.to_csv('Dataset_Clean.csv', index=False)
